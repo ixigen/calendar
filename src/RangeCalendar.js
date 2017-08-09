@@ -4,21 +4,29 @@ import PropTypes from 'prop-types';
 import moment from 'moment';
 import classnames from 'classnames';
 import CalendarPart from './range-calendar/CalendarPart';
-import { syncTime, getTodayTime, isAllowedDate } from './util/';
 import TodayButton from './calendar/TodayButton';
 import OkButton from './calendar/OkButton';
 import TimePickerButton from './calendar/TimePickerButton';
 import CommonMixin from './mixin/CommonMixin';
+import { syncTime, getTodayTime, isAllowedDate } from './util/';
 
-function noop() {
-}
-
-function getNow() {
-  return moment();
-}
+function noop() {}
 
 function isEmptyArray(arr) {
   return Array.isArray(arr) && (arr.length === 0 || arr.every(i => !i));
+}
+
+function isArraysEqual(a, b) {
+  if (a === b) return true;
+  if (a === null || typeof a === 'undefined' || b === null || typeof b === 'undefined') {
+    return false;
+  }
+  if (a.length !== b.length) return false;
+
+  for (let i = 0; i < a.length; ++i) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 function getValueFromSelectedValue(selectedValue) {
@@ -30,9 +38,11 @@ function getValueFromSelectedValue(selectedValue) {
 function normalizeAnchor(props, init) {
   const selectedValue = props.selectedValue || init && props.defaultSelectedValue;
   const value = props.value || init && props.defaultValue;
-  const normalizedValue = value || getValueFromSelectedValue(selectedValue);
+  const normalizedValue = value ?
+          getValueFromSelectedValue(value) :
+          getValueFromSelectedValue(selectedValue);
   return !isEmptyArray(normalizedValue) ?
-    normalizedValue : init && [getNow(), getNow().add(1, 'months')];
+    normalizedValue : init && [moment(), moment().add(1, 'months')];
 }
 
 function generateOptions(length) {
@@ -62,22 +72,26 @@ const RangeCalendar = createReactClass({
     prefixCls: PropTypes.string,
     dateInputPlaceholder: PropTypes.any,
     defaultValue: PropTypes.any,
-    timePicker: PropTypes.any,
     value: PropTypes.any,
+    hoverValue: PropTypes.any,
+    mode: PropTypes.arrayOf(PropTypes.oneOf(['date', 'month', 'year', 'decade'])),
+    timePicker: PropTypes.any,
     showOk: PropTypes.bool,
     showToday: PropTypes.bool,
-    selectedValue: PropTypes.array,
     defaultSelectedValue: PropTypes.array,
+    selectedValue: PropTypes.array,
     onOk: PropTypes.func,
     showClear: PropTypes.bool,
     locale: PropTypes.object,
     onChange: PropTypes.func,
     onSelect: PropTypes.func,
     onValueChange: PropTypes.func,
-    disabledDate: PropTypes.func,
+    onHoverChange: PropTypes.func,
+    onPanelChange: PropTypes.func,
     format: PropTypes.oneOfType([PropTypes.object, PropTypes.string]),
     onClear: PropTypes.func,
     type: PropTypes.any,
+    disabledDate: PropTypes.func,
     disabledTime: PropTypes.func,
   },
 
@@ -88,6 +102,8 @@ const RangeCalendar = createReactClass({
       type: 'both',
       defaultSelectedValue: [],
       onValueChange: noop,
+      onHoverChange: noop,
+      onPanelChange: noop,
       disabledTime: noop,
       showToday: true,
     };
@@ -99,15 +115,17 @@ const RangeCalendar = createReactClass({
     const value = normalizeAnchor(props, 1);
     return {
       selectedValue,
-      hoverValue: [],
+      prevSelectedValue: selectedValue,
+      firstSelectedValue: null,
+      hoverValue: props.hoverValue || [],
       value,
       showTimePicker: false,
-      isStartMonthYearPanelShow: false,
-      isEndMonthYearPanelShow: false,
+      mode: props.mode || ['date', 'date'],
     };
   },
 
   componentWillReceiveProps(nextProps) {
+    const { state } = this;
     const newState = {};
     if ('value' in nextProps) {
       if (nextProps.value) {
@@ -117,92 +135,84 @@ const RangeCalendar = createReactClass({
       }
       this.setState(newState);
     }
+    if ('hoverValue' in nextProps && !isArraysEqual(state.hoverValue, nextProps.hoverValue)) {
+      this.setState({ hoverValue: nextProps.hoverValue });
+    }
     if ('selectedValue' in nextProps) {
       newState.selectedValue = nextProps.selectedValue;
+      newState.prevSelectedValue = nextProps.selectedValue;
       this.setState(newState);
+    }
+    if ('mode' in nextProps && !isArraysEqual(state.mode, nextProps.mode)) {
+      this.setState({ mode: nextProps.mode });
     }
   },
 
   onDatePanelEnter() {
     if (this.hasSelectedValue()) {
-      this.setState({
-        hoverValue: this.state.selectedValue.concat(),
-      });
+      this.fireHoverValueChange(this.state.selectedValue.concat());
     }
   },
 
   onDatePanelLeave() {
     if (this.hasSelectedValue()) {
-      this.setState({
-        hoverValue: [],
-      });
+      this.fireHoverValueChange([]);
     }
   },
 
   onSelect(value) {
-    const { hoverValue, selectedValue } = this.state;
-    let nextSelectedValue;
     const { type } = this.props;
-    let changed = false;
-    if (!hoverValue[0] && !hoverValue[1] && type === 'both') {
-      nextSelectedValue = [value];
-      changed = true;
-    } else if (type === 'start') {
-      const endValue = selectedValue[1];
-      if (!endValue || this.compare(endValue, value) < 0) {
+    const { selectedValue, prevSelectedValue, firstSelectedValue } = this.state;
+    let nextSelectedValue;
+    if (type === 'both') {
+      if (!firstSelectedValue) {
+        syncTime(prevSelectedValue[0], value);
         nextSelectedValue = [value];
+      } else if (this.compare(firstSelectedValue, value) < 0) {
+        syncTime(prevSelectedValue[1], value);
+        nextSelectedValue = [firstSelectedValue, value];
       } else {
-        nextSelectedValue = [value, endValue];
+        syncTime(prevSelectedValue[0], value);
+        syncTime(prevSelectedValue[1], firstSelectedValue);
+        nextSelectedValue = [value, firstSelectedValue];
       }
-      changed = true;
-    } else {
-      let startValue;
-      startValue = type === 'end' ? selectedValue[0] : hoverValue[0];
+    } else if (type === 'start') {
+      syncTime(prevSelectedValue[0], value);
+      const endValue = selectedValue[1];
+      nextSelectedValue = endValue && this.compare(endValue, value) > 0 ?
+        [value, endValue] : [value];
+    } else { // type === 'end'
+      const startValue = selectedValue[0];
       if (startValue && this.compare(startValue, value) <= 0) {
+        syncTime(prevSelectedValue[1], value);
         nextSelectedValue = [startValue, value];
-        changed = true;
       } else {
+        syncTime(prevSelectedValue[0], value);
         nextSelectedValue = [value];
-        changed = true;
       }
     }
 
-    if (changed) {
-      this.fireSelectValueChange(nextSelectedValue);
-    }
+    this.fireSelectValueChange(nextSelectedValue);
   },
 
   onDayHover(value) {
-    let { hoverValue } = this.state;
-    const { selectedValue } = this.state;
+    let hoverValue = [];
+    const { selectedValue, firstSelectedValue } = this.state;
     const { type } = this.props;
     if (type === 'start' && selectedValue[1]) {
-      if (this.compare(value, selectedValue[1]) < 0) {
-        hoverValue = [value, selectedValue[1]];
-      } else {
-        hoverValue = [value];
-      }
-      this.setState({
-        hoverValue,
-      });
+      hoverValue = this.compare(value, selectedValue[1]) < 0 ?
+        [value, selectedValue[1]] : [value];
     } else if (type === 'end' && selectedValue[0]) {
-      if (this.compare(value, selectedValue[0]) > 0) {
-        hoverValue = [selectedValue[0], value];
-      } else {
-        hoverValue = [];
-      }
-      this.setState({
-        hoverValue,
-      });
+      hoverValue = this.compare(value, selectedValue[0]) > 0 ?
+        [selectedValue[0], value] : [];
     } else {
-      if (!hoverValue[0] || this.compare(value, hoverValue[0]) < 0) {
+      if (!firstSelectedValue) {
         return;
       }
-      hoverValue[1] = value;
-      this.setState({
-        hoverValue,
-      });
+      hoverValue = this.compare(value, firstSelectedValue) < 0 ?
+        [value, firstSelectedValue] : [firstSelectedValue, value];
     }
+    this.fireHoverValueChange(hoverValue);
   },
 
   onToday() {
@@ -251,12 +261,28 @@ const RangeCalendar = createReactClass({
     return this.fireValueChange(value);
   },
 
-  onStartPanelChange({ showMonthPanel, showYearPanel }) {
-    this.setState({ isStartMonthYearPanelShow: showMonthPanel || showYearPanel });
+  onStartPanelChange(value, mode) {
+    const { props, state } = this;
+    const newMode = [mode, state.mode[1]];
+    if (!('mode' in props)) {
+      this.setState({
+        mode: newMode,
+      });
+    }
+    const newValue = [value || state.value[0], state.value[1]];
+    props.onPanelChange(newValue, newMode);
   },
 
-  onEndPanelChange({ showMonthPanel, showYearPanel }) {
-    this.setState({ isEndMonthYearPanelShow: showMonthPanel || showYearPanel });
+  onEndPanelChange(value, mode) {
+    const { props, state } = this;
+    const newMode = [state.mode[0], mode];
+    if (!('mode' in props)) {
+      this.setState({
+        mode: newMode,
+      });
+    }
+    const newValue = [state.value[0], value || state.value[1]];
+    props.onPanelChange(newValue, newMode);
   },
 
   getStartValue() {
@@ -324,6 +350,10 @@ const RangeCalendar = createReactClass({
     isAllowedDate(selectedValue[1], this.props.disabledDate, this.disabledEndTime);
   },
 
+  isMonthYearPanelShow(mode) {
+    return ['month', 'year', 'decade'].indexOf(mode) > -1;
+  },
+
   hasSelectedValue() {
     const { selectedValue } = this.state;
     return !!selectedValue[1] && !!selectedValue[0];
@@ -337,6 +367,18 @@ const RangeCalendar = createReactClass({
   },
 
   fireSelectValueChange(selectedValue, direct) {
+    const { timePicker } = this.props;
+    const { prevSelectedValue } = this.state;
+    if (timePicker && timePicker.props.defaultValue) {
+      const timePickerDefaultValue = timePicker.props.defaultValue;
+      if (!prevSelectedValue[0] && selectedValue[0]) {
+        syncTime(timePickerDefaultValue[0], selectedValue[0]);
+      }
+      if (!prevSelectedValue[1] && selectedValue[1]) {
+        syncTime(timePickerDefaultValue[1], selectedValue[1]);
+      }
+    }
+
     if (!('selectedValue' in this.props)) {
       this.setState({
         selectedValue,
@@ -345,7 +387,7 @@ const RangeCalendar = createReactClass({
 
     // 尚未选择过时间，直接输入的话
     if (!this.state.selectedValue[0] || !this.state.selectedValue[1]) {
-      const startValue = selectedValue[0] || getNow();
+      const startValue = selectedValue[0] || moment();
       const endValue = selectedValue[1] || startValue.clone().add(1, 'months');
       this.setState({
         selectedValue,
@@ -354,15 +396,16 @@ const RangeCalendar = createReactClass({
     }
 
     if (selectedValue[0] && !selectedValue[1]) {
-      this.setState({
-        hoverValue: selectedValue.concat(),
-      });
+      this.setState({ firstSelectedValue: selectedValue[0] });
+      this.fireHoverValueChange(selectedValue.concat());
     }
     this.props.onChange(selectedValue);
     if (direct || selectedValue[0] && selectedValue[1]) {
       this.setState({
-        hoverValue: [],
+        prevSelectedValue: selectedValue,
+        firstSelectedValue: null,
       });
+      this.fireHoverValueChange([]);
       this.props.onSelect(selectedValue);
     }
   },
@@ -375,6 +418,14 @@ const RangeCalendar = createReactClass({
       });
     }
     props.onValueChange(value);
+  },
+
+  fireHoverValueChange(hoverValue) {
+    const props = this.props;
+    if (!('hoverValue' in props)) {
+      this.setState({ hoverValue });
+    }
+    props.onHoverChange(hoverValue);
   },
 
   clear() {
@@ -401,9 +452,7 @@ const RangeCalendar = createReactClass({
   },
 
   render() {
-    const props = this.props;
-    const state = this.state;
-    const { showTimePicker, isStartMonthYearPanelShow, isEndMonthYearPanelShow } = state;
+    const { props, state } = this;
     const {
       prefixCls, dateInputPlaceholder,
       timePicker, showOk, locale, showClear,
@@ -412,6 +461,8 @@ const RangeCalendar = createReactClass({
     const {
       hoverValue,
       selectedValue,
+      mode,
+      showTimePicker,
     } = state;
     const className = {
       [props.className]: !!props.className,
@@ -460,7 +511,7 @@ const RangeCalendar = createReactClass({
             nextMonthOfStart.month() === endValue.month();
     return (
       <div
-        ref="root"
+        ref={this.saveRoot}
         className={classes}
         style={props.style}
         tabIndex="0"
@@ -488,6 +539,7 @@ const RangeCalendar = createReactClass({
               disabledMonth={this.disabledStartMonth}
               format={this.getFormat()}
               value={startValue}
+              mode={mode[0]}
               placeholder={placeholder1}
               onInputSelect={this.onStartInputSelect}
               onValueChange={this.onStartValueChange}
@@ -495,7 +547,7 @@ const RangeCalendar = createReactClass({
               timePicker={timePicker}
               showTimePicker={showTimePicker}
               enablePrev
-              enableNext={!isClosestMonths || isEndMonthYearPanelShow}
+              enableNext={!isClosestMonths || this.isMonthYearPanelShow(mode[1])}
             />
             <span className={`${prefixCls}-range-middle`}>~</span>
             <CalendarPart
@@ -507,6 +559,7 @@ const RangeCalendar = createReactClass({
               timePickerDisabledTime={this.getEndDisableTime()}
               placeholder={placeholder2}
               value={endValue}
+              mode={mode[1]}
               onInputSelect={this.onEndInputSelect}
               onValueChange={this.onEndValueChange}
               onPanelChange={this.onEndPanelChange}
@@ -514,7 +567,7 @@ const RangeCalendar = createReactClass({
               showTimePicker={showTimePicker}
               disabledTime={this.disabledEndTime}
               disabledMonth={this.disabledEndMonth}
-              enablePrev={!isClosestMonths || isStartMonthYearPanelShow}
+              enablePrev={!isClosestMonths || this.isMonthYearPanelShow(mode[0])}
               enableNext
             />
           </div>

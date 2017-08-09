@@ -1,10 +1,10 @@
 import React from 'react';
 import createReactClass from 'create-react-class';
 import PropTypes from 'prop-types';
-import MonthPanel from './month/MonthPanel';
+import KeyCode from 'rc-util/lib/KeyCode';
+import CalendarHeader from './calendar/CalendarHeader';
 import CalendarMixin from './mixin/CalendarMixin';
 import CommonMixin from './mixin/CommonMixin';
-import KeyCode from 'rc-util/lib/KeyCode';
 
 const MonthCalendar = createReactClass({
   propTypes: {
@@ -13,10 +13,15 @@ const MonthCalendar = createReactClass({
   },
   mixins: [CommonMixin, CalendarMixin],
 
+  getInitialState() {
+    return { mode: 'month' };
+  },
+
   onKeyDown(event) {
     const keyCode = event.keyCode;
     const ctrlKey = event.ctrlKey || event.metaKey;
     const stateValue = this.state.value;
+    const { disabledDate } = this.props;
     let value = stateValue;
     switch (keyCode) {
       case KeyCode.DOWN:
@@ -44,7 +49,9 @@ const MonthCalendar = createReactClass({
         }
         break;
       case KeyCode.ENTER:
-        this.onSelect(stateValue);
+        if (!disabledDate || !disabledDate(stateValue)) {
+          this.onSelect(stateValue);
+        }
         event.preventDefault();
         return 1;
       default:
@@ -57,20 +64,31 @@ const MonthCalendar = createReactClass({
     }
   },
 
+  handlePanelChange(_, mode) {
+    if (mode !== 'date') {
+      this.setState({ mode });
+    }
+  },
+
   render() {
-    const props = this.props;
-    const children = (<MonthPanel
-      locale={props.locale}
-      disabledDate={props.disabledDate}
-      style={{ position: 'relative' }}
-      value={this.state.value}
-      cellRender={props.monthCellRender}
-      contentRender={props.monthCellContentRender}
-      rootPrefixCls={props.prefixCls}
-      onChange={this.setValue}
-      onSelect={this.onSelect}
-    />);
+    const { props, state } = this;
+    const { mode, value } = state;
+    const children = (
+      <CalendarHeader
+        prefixCls={props.prefixCls}
+        mode={mode}
+        value={value}
+        locale={props.locale}
+        disabledMonth={props.disabledDate}
+        monthCellRender={props.monthCellRender}
+        monthCellContentRender={props.monthCellContentRender}
+        onMonthSelect={this.onSelect}
+        onValueChange={this.setValue}
+        onPanelChange={this.handlePanelChange}
+      />
+    );
     return this.renderRoot({
+      className: `${props.prefixCls}-month-calendar`,
       children,
     });
   },
